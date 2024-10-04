@@ -64,6 +64,18 @@ class FrameFlow
         "EXPIRED_CHAIN"
     };
 
+    constexpr static const char *SUBMIT_STATUS_STRS[] = {
+        "ADDED_NEW",
+        "UPDATED_EXISTING",
+        "NO_ROUTE_TO_WORLD",
+        "UNMATCHED_PARENT"
+    };
+
+    constexpr static const char *REMOVAL_RESULT_STRS[] = {
+        "OK",
+        "FRAME_NOT_FOUND"
+    };
+
 public:
     enum class LookupStatus {
         OK,
@@ -109,7 +121,20 @@ public:
 
     RemovalResult removeFrame (const std::string &frameId);
 
-private:
+    std::string dump();
+    std::string treeToGraphviz () {
+        return _frameTree.toGraphviz<std::string> ([](FrameNode *node) -> std::string {
+            return "\"" /*+ node->data().parentId() + " to "*/ + node->data().frameId() + "\"";
+        });
+    }
+    std::string submitStatusMessage (SubmitStatus status) {
+        return SUBMIT_STATUS_STRS[static_cast<int> (status)];
+    }
+    std::string removeResultMessage (SubmitStatus status) {
+        return SUBMIT_STATUS_STRS[static_cast<int> (status)];
+    }
+
+    // private:
     SubmitStatus submitTransform (FrameData &&frameData);
     FrameNode *getFrameNode (const std::string &frameId);
     FrameNode *createChildNode (FrameNode *parent, FrameData &&frameData);
@@ -119,6 +144,7 @@ private:
     // find paths to Lowest Common Ancestor
     std::pair<Path, Path> pathsToLCA (FrameNode *baseFrameNode, FrameNode *targetFrameNode);
     bool frameExpired (const FrameData &frameData);
+
 
 
 private:

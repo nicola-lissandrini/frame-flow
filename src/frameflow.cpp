@@ -50,13 +50,12 @@ FrameFlow::SubmitStatus FrameFlow::submitTransform (FrameData &&frameData)
 {
     FrameNode *parentNode = getFrameNode (frameData.parentId());
 
+
     // If parent does not exists, add the data to the pending frames
     if (parentNode == nullptr) {
         if (!moveToPending (std::move (frameData)))
             return SubmitStatus::UNMATCHED_PARENT;
 
-        cout << "Added tf from " << frameData.parentId() << " to " << frameData.frameId()
-             << " to pending list";
         return SubmitStatus::NO_ROUTE_TO_WORLD;
     }
 
@@ -77,11 +76,72 @@ FrameFlow::SubmitStatus FrameFlow::submitTransform (FrameData &&frameData)
     }
 
     // if both parents and child already exists but with incorrect relation
-    cout << "Trying to add child frame " << frameData.frameId() << " to parent " << frameData.parentId()
-         << "but child frame has already parent " << currentNode->parent()->data().frameId() << endl;
+    //cerr << "Trying to add child frame " << frameData.frameId() << " to parent " << frameData.parentId()
+    //     << "but child frame has already parent " << currentNode->parent()->data().frameId() << endl;
 
     return SubmitStatus::UNMATCHED_PARENT;
 }
+
+void FrameFlow::updateFrameNode (FrameNode *frameNode, FrameData &&frameData) {
+    frameNode->data() = std::move (frameData);
+}
+
+FrameFlow::FrameNode *FrameFlow::createChildNode  (FrameNode *parentNode, FrameData &&frameData)
+{
+    FrameNode *newFrameNode = parentNode->addChild(std::move (frameData));
+
+    _frameNodeTable[newFrameNode->data().frameId()] = newFrameNode;
+
+    recheckPendingFrames ();
+    return nullptr;
+}
+
+void FrameFlow::recheckPendingFrames ()
+{
+    decltype(_pendingFrames)::iterator it;
+    FrameNode *currentParent;
+
+    for (it = _pendingFrames.begin(); it != _pendingFrames.end(); it++) {
+        const FrameData &currentFrameData = it->second;
+        currentParent = getFrameNode (currentFrameData.parentId());
+
+        if (currentParent != nullptr)
+            break;
+    }
+
+    if (it != _pendingFrames.end()) {
+        FrameData &validFrameData = it->second;
+
+        _pendingFrames.erase(it);
+
+        /* Warning! this correctly cause a continuous loop
+         * until all valid pending frames are added, but
+         * it increases the call stack linearly with the number
+         * of found transform. It shouldn't be a problem now
+         * but keep an eye on it
+        */
+        createChildNode (currentParent, std::move(validFrameData));
+    }
+}
+
+FrameFlow::RemovalResult FrameFlow::removeFrame (const std::string &frameId)
+{
+    FrameNode *frameNode = getFrameNode (frameId);
+
+    if (frameNode == nullptr)
+        return RemovalResult::FRAME_NOT_FOUND;
+
+    _frameTree.traverse (FrameTree::DEPTH_FIRST_POSTORDER, frameNode, [this, frameNode] (FrameNode *currentNode) {
+        _frameNodeTable.erase(currentNode->data().frameId());
+        if (currentNode != frameNode)
+            moveToPending(std::move (currentNode->data()));
+    });
+
+    frameNode->parent()->removeChildByPointer (frameNode);
+
+    return RemovalResult::OK;
+}
+
 
 pair<FrameFlow::Path, FrameFlow::Path> FrameFlow::pathsToLCA (FrameNode *baseFrameNode,
                                                                                    FrameNode *targetFrameNode)
@@ -89,7 +149,7 @@ pair<FrameFlow::Path, FrameFlow::Path> FrameFlow::pathsToLCA (FrameNode *baseFra
     auto equalizeLevels = [] (FrameNode *startNode, int targetDepth, Path &chainOutput) -> FrameNode * {
         FrameNode *current = startNode;
 
-        while (current->depth() < targetDepth) {
+        while (current->depth() > targetDepth) {
             chainOutput.push_back(current);
 
             current = current->parent();
@@ -166,10 +226,10 @@ FrameFlow::TransformResult FrameFlow::lookupTransform (const std::string &baseFr
             return chain;
     };
 
-    // the first one needs to be iterated in reverse
-    chainBTLResult = chainPathTransforms (pathBTL.rbegin(), pathBTL.rend());
-    // The second in order
-    chainLTTResult = chainPathTransforms (pathLTT.begin(), pathLTT.end());
+    // the first one needs to be iterated in order (which is botttom up)
+    chainBTLResult = chainPathTransforms (pathBTL.begin(), pathBTL.end());
+    // The second in reverse (which is top down)
+    chainLTTResult = chainPathTransforms (pathLTT.rbegin(), pathLTT.rend());
 
     if (!chainBTLResult.success() || !chainLTTResult.success())
         return LookupStatus::EXPIRED_CHAIN;
@@ -177,59 +237,43 @@ FrameFlow::TransformResult FrameFlow::lookupTransform (const std::string &baseFr
     return chainBTLResult.value().inverse() * chainLTTResult.value();
 }
 
-void FrameFlow::updateFrameNode (FrameNode *frameNode, FrameData &&frameData) {
-    frameNode->data() = std::move (frameData);
-}
-
-FrameFlow::FrameNode *FrameFlow::createChildNode  (FrameNode *parentNode, FrameData &&frameData)
+string FrameFlow::dump ()
 {
-    parentNode->addChild(std::move (frameData));
-
-    recheckPendingFrames ();
-    return nullptr;
-}
-
-void FrameFlow::recheckPendingFrames ()
-{
-    decltype(_pendingFrames)::iterator it;
-    FrameNode *currentParent;
-
-    for (it = _pendingFrames.begin(); it != _pendingFrames.end(); it++) {
-        const FrameData &currentFrameData = it->second;
-        currentParent = getFrameNode (currentFrameData.parentId());
-
-        if (currentParent != nullptr)
-            break;
-    }
-
-    if (it != _pendingFrames.end()) {
-        FrameData &validFrameData = it->second;
-        _pendingFrames.erase(it);
-
-        /* Warning! this correctly cause a continuous loop
-         * until all valid pending frames are added, but
-         * it increases the call stack linearly with the number
-         * of found transform. It shouldn't be a problem now
-         * but keep an eye on it
-        */
-        createChildNode (currentParent, std::move(validFrameData));
-    }
-}
-
-FrameFlow::RemovalResult FrameFlow::removeFrame (const std::string &frameId)
-{
-    FrameNode *frameNode = getFrameNode (frameId);
-
-    if (frameNode == nullptr)
-        return RemovalResult::FRAME_NOT_FOUND;
-
-    _frameTree.traverse (FrameTree::DEPTH_FIRST_POSTORDER, frameNode, [this] (FrameNode *currentNode) {
-        moveToPending(std::move (currentNode->data()));
+    string tree = _frameTree.toJson([](FrameNode *current) {
+        stringstream ss;
+        ss << "{\"frame_id\": \"" << current->data().frameId() << "\", \"parent_id\": \"" << current->data().parentId() << "\"}";
+        return ss.str ();
     });
 
-    frameNode->parent()->removeChildByPointer (frameNode);
+    stringstream framesMap;
 
-    return RemovalResult::OK;
+    framesMap << "\"frames_map\": [";
+    bool first = true;
+    for (auto [frameId, frameNode]: _frameNodeTable) {
+        framesMap << (first ? "\"" : ", \"") << frameNode->data().frameId() << "\"";
+        first = false;
+    }
+
+    framesMap << "]";
+
+    stringstream pendingMap;
+
+    pendingMap << "\"pending_map\": [";
+    first = true;
+    for (auto [frameId, frameData] : _pendingFrames) {
+        pendingMap << (first ? "" : ", ") << "{\"frame_id\": \""
+                   << frameData.frameId()  << "\", \"parent_id\": \""
+                   << frameData.parentId() << "\"}";
+        first = false;
+    }
+    pendingMap << "]";
+
+    stringstream total;
+
+    total << "{\"tree\": " << tree << ", " << framesMap.str() << ", " << pendingMap.str() << "}";
+
+    return total.str();
+
 }
 
 
